@@ -57,6 +57,7 @@
 
 /* fixed ethernet type for all packets */
 #define ETH_P_SERCOMM 0x8888
+#define ETH_P_ASSIGN 0x0015
 
 /* offset of "CFE1CFE1" in a firmware file */
 #define CFE_MAGIC_OFFSET 0x4e0
@@ -100,6 +101,7 @@ struct pid_s {
   } while (0)
 
 static int debug = 0;
+static int assignmac = 0;
 static unsigned char own_mac[ETH_ALEN]; /* own mac address */
 
 static void hexdump(void *addr, int len)
@@ -110,23 +112,6 @@ static void hexdump(void *addr, int len)
     c++;
     len--;
   }
-}
-
-static void usage(const char *name)
-{
-
-  printf("Download a firmware into a Linksys WAG160N v2\n\n");
-  printf("1) Power off the device\n");
-  printf("2) Press the reset button\n");
-  printf("3) Power on the device while holding the reset button pressed\n");
-  printf("4) Wait until the power LED flashes red/green, you may release the reset button then.\n");
-  printf("   The device is in download mode now.\n");
-  printf("5) Call %s [-v] <ethernet device name> [<firmware file>]\n", name);
-  printf("   if <firmware file> is missing only the devices found are dumped\n");
-  printf("   e.g.:\n");
-  printf("    dump all devices connected to eth2: %s eth2\n", name);
-  printf("    update a device at eth1: %s eth1 firmware\n", name);
-  printf("    -v to see debugs for each packet sent/received\n");
 }
 
 typedef enum {
@@ -159,34 +144,74 @@ struct hdr_s {
   unsigned short length; /* length of following data */
 } __attribute__ ((packed)); /* overall length = 0x18 */
 
+/* Mac assign packet */
+struct hdr_m {
+  unsigned char da[ETH_ALEN];	/* can be broadcast to set all devices */
+  unsigned char sa[ETH_ALEN];
+  unsigned short eth_type;	/* 0x0015 */
+  unsigned char newmac[ETH_ALEN];
+} __attribute__ ((packed)); /* overall length = 0x14 */
+
+/*
+ethertype 0x1500, DST FF:FF:FF:FF:FF:FF
+
+null payload: set default mac (RV6699v4: 00c002123588)
+
+terminal output:
+DEBUG_DBG:init state, listening
+DEBUG_DBG:state, listening
+DEBUG_DBG:event, assign / set erase mode / console break
+DEBUG_DBG:state, assign
+DEBUG_DBG:event, assign-req
+MAC assign Packet from RD Utility
+DEBUG_INF:Assign Done.
+DEBUG_DBG:sc_dl_fsm_steps set(restart) time-out timer
+DEBUG_DBG:stop timer
+DEBUG_DBG:state, done
+DEBUG_INF:Reset.BGA IC
+
+answer:
+20:06:41.799025 50:65:f3:39:0a:3d > ff:ff:ff:ff:ff:ff, 802.3, length 18: LLC, dsap Unknown (0xde) Individual, ssap Unknown (0xac) Response, ctrl 0xefbe: Information, send seq 95, rcv seq 119, Flags [Final], length 4
+        0x0000:  ffff ffff ffff 5065 f339 0a3d 0015 dead  ......Pe.9.=....
+        0x0010:  beef                                     ..
+20:06:41.905064 de:ad:be:ef:00:00 > 50:65:f3:39:0a:3d, 802.3, length 64: LLC, dsap Unknown (0xde) Individual, ssap Unknown (0xac) Response, ctrl 0xefbe: Information, send seq 95, rcv seq 119, Flags [Final], length 50
+        0x0000:  5065 f339 0a3d dead beef 0000 0015 dead  Pe.9.=..........
+        0x0010:  beef 0000 0000 0200 0000 0000 0000 0000  ................
+        0x0020:  0000 0000 0000 0000 0000 0000 0000 0000  ................
+        0x0030:  0000 0000 0000 0000 0000 0000 0000 fe80  ................
+
+assigned mac: de  ad  be  ef  00  00
+*/
+
+
+
 /* sizeof of struct hdr_s */
 #define HDR_SIZE sizeof(struct hdr_s)
+#define MAC_ADDR(a) (a)[0],(a)[1],(a)[2],(a)[3],(a)[4],(a)[5]
 
 void print_pkt(const char *str1, const char *str2, unsigned char *buf,
 	       unsigned int len)
 {
-  struct hdr_s hdr;
+    struct hdr_s hdr;
 
-  if (len < sizeof(hdr))
-    return;
-  
-#define MAC_ADDR(a) (a)[0],(a)[1],(a)[2],(a)[3],(a)[4],(a)[5]
+    if (len < sizeof(hdr)) {
+	hexdump(buf, MIN(len, 64)); // non-described packet
+	printf("\n");
+    } else {
+	memcpy(&hdr, buf, sizeof(hdr));
+	printf("#DBG %s %s  da=%02x:%02x:%02x:%02x:%02x:%02x "
+	    "sa=%02x:%02x:%02x:%02x:%02x:%02x eth_type=%04x cmd=%04x seqno=%04x\n",
+	    str1, str2, MAC_ADDR(hdr.da), MAC_ADDR(hdr.sa), le16toh(hdr.eth_type), 
+	    le16toh(hdr.cmd), le16toh(hdr.seqno));
+	printf("#DBG   byte_off=%04x chunk_off=%04x length=%04x\n",
+	    le16toh(hdr.byte_off), le16toh(hdr.chunk_off), le16toh(hdr.length));
 
-  memcpy(&hdr, buf, sizeof(hdr));
-  printf("#DBG %s %s  da=%02x:%02x:%02x:%02x:%02x:%02x "
-	 "sa=%02x:%02x:%02x:%02x:%02x:%02x eth_type=%04x cmd=%04x seqno=%04x\n",
-	 str1, str2, MAC_ADDR(hdr.da), MAC_ADDR(hdr.sa), le16toh(hdr.eth_type), 
-	 le16toh(hdr.cmd), le16toh(hdr.seqno));
-  printf("#DBG   byte_off=%04x chunk_off=%04x length=%04x\n",
-	 le16toh(hdr.byte_off), le16toh(hdr.chunk_off), le16toh(hdr.length));
-
-#undef MAC_ADDR
-
-  if (len > sizeof(hdr)) {
-    printf("#DBG  payload 0x%lx:", len - sizeof(hdr));
-    hexdump(buf+sizeof(hdr), MIN(len-sizeof(hdr), 16));
-    printf("\n");
-  }
+	if (len > sizeof(hdr)) {
+	    printf("#DBG  payload 0x%lx:", len - sizeof(hdr));
+	    hexdump(buf+sizeof(hdr), MIN(len-sizeof(hdr), 16));
+	    printf("\n");
+	}
+    }
 }
 
 static int SendHWInfoReq(int s, const unsigned char *mac)
@@ -279,6 +304,26 @@ static int SendUpgrade(int s, const unsigned char *mac,
   return send(s, buf, sizeof(hdr)+len, 0) < 0;
 }
 
+int SendAssignMAC(int s, const unsigned char *mac, unsigned char *newmac)
+{
+  struct hdr_m hdr;
+  unsigned int len = 0;
+
+  memset(&hdr, 0, sizeof(hdr));
+  memcpy(hdr.da, mac, ETH_ALEN);
+  memcpy(hdr.sa, own_mac, ETH_ALEN);
+  memcpy(hdr.newmac, newmac, ETH_ALEN);
+
+  hdr.eth_type = htons(ETH_P_ASSIGN);
+
+  if (debug) {
+    printf("#DBG oldmac=%02x:%02x:%02x:%02x:%02x:%02x newmac=%02x:%02x:%02x:%02x:%02x:%02x\n", MAC_ADDR(hdr.da), MAC_ADDR(hdr.newmac));
+    print_pkt(__FUNCTION__, "", (unsigned char *)&hdr, sizeof(hdr));
+  }
+
+  return send(s, &hdr, sizeof(hdr), 0) < 0;
+}
+
 /* max. number of boards we are able to detect */
 #define MAX_NR_BOARDS 16
 
@@ -288,7 +333,7 @@ static struct hw_info_s {
 } hwinfo[MAX_NR_BOARDS];
 
 /* dump the content of a hwinfo */
-void DumpHWInfo(struct hw_info_s *s, int nr)
+void DumpHWInfo(struct hw_info_s *s, unsigned int nr)
 {
   printf("%u: %02x:%02x:%02x:%02x:%02x:%02x  %s func %u company %c%c "
 	 "version %u.%u-%u\n",
@@ -469,7 +514,7 @@ int ReadHWInfoResp(int s)
   return rc;
 }
 
-int UpdateFW(int s, const char *fw_name, struct hw_info_s *hw)
+int UpdateFW(int s, unsigned char dstmac[ETH_ALEN], const char *fw_name)
 {
   int fd = -1;
   unsigned char *mm;
@@ -529,13 +574,13 @@ int UpdateFW(int s, const char *fw_name, struct hw_info_s *hw)
 
   /* start updating the firmware */
   seqno=0;
-  if (SendUpgradeStart(s, hw->mac, seqno)) {
+  if (SendUpgradeStart(s, dstmac, seqno)) {
     err("failed to send UPGRADE START");
     goto end;
   }
 
   /* wait for response */
-  if ((rc=ReadResp(s, hw->mac, seqno, 2000))) {
+  if ((rc=ReadResp(s, dstmac, seqno, 2000))) {
     err("ReadResp after upgrade start failed with %d", rc);
     goto end;
   }
@@ -548,12 +593,12 @@ int UpdateFW(int s, const char *fw_name, struct hw_info_s *hw)
     unsigned int nr = MIN(MAX_PAYLOAD_LEN,st.st_size-off);
 
     /* send update data */
-    if ((rc=SendUpgrade(s, hw->mac, seqno, off, fw+off, nr,
+    if ((rc=SendUpgrade(s, dstmac, seqno, off, fw+off, nr,
 			UpgradeData)) < 0)
       goto end;
 
     /* wait for response */
-    if ((rc=ReadResp(s, hw->mac, seqno, 2000))) {
+    if ((rc=ReadResp(s, dstmac, seqno, 2000))) {
       err("ReadResp after upgrade start failed with %d", rc);
       goto end;
     }
@@ -570,11 +615,11 @@ int UpdateFW(int s, const char *fw_name, struct hw_info_s *hw)
     unsigned int nr = MIN(MAX_PAYLOAD_LEN,st.st_size-off);
 
     /* send update data */
-    if ((rc=SendUpgrade(s, hw->mac, seqno, off, fw+off, nr, UpgradeVerify)) < 0)
+    if ((rc=SendUpgrade(s, dstmac, seqno, off, fw+off, nr, UpgradeVerify)) < 0)
       goto end;
 
     /* wait for response */
-    if ((rc=ReadResp(s, hw->mac, seqno, 2000))) {
+    if ((rc=ReadResp(s, dstmac, seqno, 2000))) {
       err("ReadResp after upgrade start failed with %d", rc);
       goto end;
     }
@@ -587,7 +632,7 @@ int UpdateFW(int s, const char *fw_name, struct hw_info_s *hw)
 
 
   /* send a Reset to the target */
-  if (SendReboot(s, hw->mac)) {
+  if (SendReboot(s, dstmac)) {
     err("failed to reboot (%m)");
     rc=-1;
   }
@@ -605,35 +650,59 @@ static const unsigned char bc_mac[6] = {0xff,0xff,0xff,0xff,0xff,0xff};
 
 int main(int argc, char **argv)
 {
-  char *devname;
-  int s;
-  int idx;
-  struct ifreq ifr;
-  struct sockaddr_ll sa;
-  int nr;
-  int i;
-  unsigned int board_nr;
-  int devname_idx=1;
+    struct ifreq ifr;
+    struct sockaddr_ll sa;
 
-  if (argc > 1 && argv[1][0] == '-') {
-    if (argv[1][1] == 'v') {
-      debug=1;
-      devname_idx++;
-    } else {
-      if (argv[1][1] == 'h') {
-	usage(argv[0]);
-	return 0;
-      }
+    int s, nr;
+    unsigned int i, idx, board_nr;
+
+    unsigned int interact = 0, updatefw = 0, assignmac = 0, has_dstmac = 0;
+    unsigned char dstmac[ETH_ALEN] = {0}, newmac[ETH_ALEN] = {0};
+    unsigned char *devname = NULL;
+    unsigned char *filename = NULL;
+
+    int c;
+    while ( 1 ) {
+        c = getopt(argc, argv, "i:f:m:d:v");
+        if (c == -1)
+                break;
+        
+        switch (c) {
+                case 'i':  // interface
+                        devname = optarg;
+                        break;
+                case 'f':  // filename
+                        filename = optarg;
+			updatefw++;
+			interact++;
+                        break;
+                case 'm':
+                        if (sscanf(optarg, "%02x:%02x:%02x:%02x:%02x:%02x",
+                             &newmac[0], &newmac[1], &newmac[2], &newmac[3],
+                             &newmac[4], &newmac[5]) != ETH_ALEN) goto print_usage;
+			assignmac++;
+			interact++;
+                        break;
+                case 'd':
+                        if (sscanf(optarg, "%02x:%02x:%02x:%02x:%02x:%02x",
+                             &dstmac[0], &dstmac[1], &dstmac[2], &dstmac[3],
+                             &dstmac[4], &dstmac[5]) != ETH_ALEN) goto print_usage;
+			has_dstmac++;
+                        break;
+                case 'v':
+			debug++;
+                        break;
+                case 'h':
+                default:
+			goto print_usage;
+			return 1;
+                }
     }
-  }
 
-  if (argc < devname_idx+1) {
-    err("ethernet device missing");
-    usage(argv[0]);
-    return 1;
-  }
-
-  devname = argv[devname_idx];
+    if (!devname) {
+	err("#ERR main: ethernet device missing\n");
+	goto print_usage;
+    }
 
   /* we set the protocol the one used for sercomm to
      filter the other packets out */
@@ -683,36 +752,55 @@ int main(int argc, char **argv)
     return 6;
   }
 
-  /* send a hw info request to the broadcast mac */
-  if (SendHWInfoReq(s,bc_mac) < 0) {
-    err("failed to send HW Info Req (%m)");
-    return 7;
-  }
+    if (!has_dstmac) {
+	/* send a hw info request to the broadcast mac */
+	if (SendHWInfoReq(s,bc_mac) < 0) {
+	    err("failed to send HW Info Req (%m)");
+	    return 7;
+	}
 
-  nr = ReadHWInfoResp(s);
+	nr = ReadHWInfoResp(s);
 
-  if (nr < 0)
-    return 8;
-  if (!nr) {
-    printf("no boards found\n");
+	if (nr < 0)
+	    return 8;
+	if (!nr) {
+	    printf("no boards found\n");
+	    return 0;
+	}
+
+	for(i=0; i < nr; i++) {
+	    DumpHWInfo(&hwinfo[i],i);
+	}
+
+	/* a file to flash was given */
+	if (nr > 1) {
+	    do {
+	        printf("choose a board number(0-%d): ", nr-1);
+	        scanf("%u\n", &board_nr);
+	    } while (board_nr >= nr);
+	} else board_nr=0;
+
+	memcpy(&dstmac, &hwinfo[board_nr].mac, sizeof(dstmac));
+    }
+
+    if (updatefw && filename) return UpdateFW(s, dstmac, filename);
+    if (assignmac) return SendAssignMAC(s, dstmac, (unsigned char *)newmac);
+
     return 0;
-  }
 
-  for(i=0; i < nr; i++) {
-    DumpHWInfo(&hwinfo[i],i);
-  }
+    print_usage:
+    printf("%s: Sercomm factory restore tool.\n"
+	    "1) Power off the device\n"
+	    "2) Press the reset button\n"
+	    "3) Power on the device while holding the reset button pressed\n"
+	    "4) Wait until the power LED flashes red/green, you may release the reset button then.\n"
+	    "   The device is in download mode now.\n"
+	    " -i <interface>\n"
+	    " -d <destination mac XX:XX:XX:XX:XX:XX> (skips discovery phase)\n"
+	    " -f <filename to write>\n"
+	    " -m <mac to set like XX:XX:XX:XX:XX:XX>\n"
+	    " -v verbose output\n"
+	    "", argv[0]);
 
-  if (argc > devname_idx+1) {
-    /* a file to flash was given */
-    if (nr > 1) {
-      do {
-	printf("choose a board number(0-%d): ", nr-1);
-	scanf("%u\n", &board_nr);
-      } while (board_nr >= nr);
-    } else
-      board_nr=0;
-	
-    return UpdateFW(s, argv[devname_idx+1], &hwinfo[board_nr]);
-  } else
-    return 0;
+    return 255;
 }

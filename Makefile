@@ -9,7 +9,7 @@ INSTGROUP = root
 all: $(PROGS)
 
 $(PROGS): $(OBJS)
-	$(CC) $(LDFLAGS) $^ $(LDLIBS) -o $@
+	$(CC) $(LDFLAGS) $^ $(LDLIBS) -Wall -o $@
 
 install:	$(PROGS)
 	$(INSTALL) -d $(INSTDIR)
