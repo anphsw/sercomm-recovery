@@ -527,8 +527,6 @@ int UpdateFW(int s, unsigned char dstmac[ETH_ALEN], const char *fw_name)
   int rc = -1;
   struct pid_s pid;
 
-#define SHOW_PROGRESS(c) do { putchar(c); fflush(stdout); } while (0)
-
   /* open and map firmware file */
   if ((fd=open(fw_name, O_RDONLY)) < 0) {
     err("failed to open firmware file %s (%m)", fw_name);
@@ -585,7 +583,7 @@ int UpdateFW(int s, unsigned char dstmac[ETH_ALEN], const char *fw_name)
     goto end;
   }
 
-  SHOW_PROGRESS('S');
+    printf("Payload size: %u\nWriting...\n", st.st_size);
 
   seqno++;
   off=0;
@@ -603,11 +601,13 @@ int UpdateFW(int s, unsigned char dstmac[ETH_ALEN], const char *fw_name)
       goto end;
     }
 
-    SHOW_PROGRESS('F');
+    printf("\033[s\033[2K%u\033[u", off);
 
     off += nr;
     seqno++;
   } /* while (off < st.st_size) */
+
+    printf("\nVerifying...\n");
 
   /* verify the update */
   off=0;
@@ -624,12 +624,13 @@ int UpdateFW(int s, unsigned char dstmac[ETH_ALEN], const char *fw_name)
       goto end;
     }
 
-    SHOW_PROGRESS('V');
+    printf("\033[s\033[2K%u\033[u", off);
 
     off += nr;
     seqno++;
   } /* while (off < st.st_size) */
 
+    printf("\nRebooting...\n");
 
   /* send a Reset to the target */
   if (SendReboot(s, dstmac)) {
