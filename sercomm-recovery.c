@@ -601,10 +601,10 @@ int UpdateFW(int s, unsigned char dstmac[ETH_ALEN], const char *fw_name)
       goto end;
     }
 
-    printf("\033[s\033[2K%u\033[u", off);
-
     off += nr;
     seqno++;
+
+    printf("\033[s\033[2K%u\033[u", off);
   } /* while (off < st.st_size) */
 
     printf("\nVerifying...\n");
@@ -624,10 +624,10 @@ int UpdateFW(int s, unsigned char dstmac[ETH_ALEN], const char *fw_name)
       goto end;
     }
 
-    printf("\033[s\033[2K%u\033[u", off);
-
     off += nr;
     seqno++;
+
+    printf("\033[s\033[2K%u\033[u", off);
   } /* while (off < st.st_size) */
 
     printf("\nRebooting...\n");
